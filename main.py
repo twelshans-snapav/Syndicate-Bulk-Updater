@@ -22,7 +22,14 @@ class App(tk.Tk):
         self.current_folder_id: Optional[Union[int, str]] = None
         self.tree_ids: Dict[str, Union[int, str]] = {}
         self.cls_name_cache: Dict[int, str] = {}
+        self._docs_offset: int = 0
+        self._last_activity: float = 0.0
+        self._inactivity_seconds: int = 5 * 60
         self._build_ui()
+        self.bind_all('<Motion>', self._reset_inactivity_timer)
+        self.bind_all('<ButtonPress>', self._reset_inactivity_timer)
+        self.bind_all('<KeyPress>', self._reset_inactivity_timer)
+        self._check_inactivity()
 
     def log(self, msg: str):
         ts = time.strftime("%H:%M:%S")
@@ -83,6 +90,7 @@ class App(tk.Tk):
         self.tree.pack(fill=tk.BOTH, expand=True)
         self.tree.bind("<<TreeviewSelect>>", self.on_tree_select)
         self.tree.bind("<Double-1>", self.on_tree_double)
+        self.tree.bind("<<TreeviewOpen>>", self._on_tree_open)
 
         # --- Right pane: Documents ---
         right = ttk.Frame(paned)
@@ -162,6 +170,31 @@ class App(tk.Tk):
         except Exception:
             pass
 
+    # ---------- Inactivity sign-out ----------
+    def _reset_inactivity_timer(self, event=None):
+        self._last_activity = time.time()
+
+    def _check_inactivity(self):
+        if self.client.auth and self._last_activity > 0:
+            if time.time() - self._last_activity >= self._inactivity_seconds:
+                self._sign_out_inactivity()
+                return
+        self.after(30000, self._check_inactivity)
+
+    def _sign_out_inactivity(self):
+        self.client.auth = None
+        self._last_activity = 0.0
+        self.auth_status.set("Signed out (5 min inactivity)")
+        for b in [self.btn_expand, self.btn_prev, self.btn_next, self.btn_edit]:
+            b.config(state=tk.DISABLED)
+        self.docs.delete(*self.docs.get_children())
+        for c in self.tree.get_children(''):
+            self.tree.delete(c)
+        self.tree_ids.clear()
+        self.current_folder_id = None
+        self.log("Signed out due to 5 minutes of inactivity.\n")
+        self.after(30000, self._check_inactivity)
+
     # ---------- Folder events ----------
     def on_auth(self):
         domain = (self.domain_var.get() or '').strip()
@@ -178,6 +211,7 @@ class App(tk.Tk):
                 self.start_busy('Authenticating…')
                 self.client.authenticate(domain, user, pw)
                 self.auth_status.set("Authenticated")
+                self._last_activity = time.time()
                 for b in [self.btn_expand, self.btn_prev, self.btn_next, self.btn_edit]:
                     b.config(state=tk.NORMAL)
                 self.on_load_tree()
@@ -200,16 +234,17 @@ class App(tk.Tk):
                 for c in self.tree.get_children(''):
                     self.tree.delete(c)
                 self.tree_ids.clear()
-                self.log(f"Loading first-level subfolders of {start}…")
-                subs = self.client.get_subfolders_all(start, page_size=200)
+                self.log(f"Loading subfolders of {start}…")
+                subs = self.client.get_subfolders_page(start, max_results=200, offset=0)
                 root_item = self.tree.insert('', tk.END, text=str(start))
                 self.tree_ids[root_item] = start
                 for f in subs:
                     name = str(f.get('name') or f.get('id'))
                     it = self.tree.insert(root_item, tk.END, text=name)
                     self.tree_ids[it] = f.get('id')
+                    self.tree.insert(it, tk.END, text='…')
                 self.tree.item(root_item, open=True)
-                self.log(f"Loaded {len(subs)} subfolder(s). Double-click to expand.")
+                self.log(f"Loaded {len(subs)} subfolder(s).")
                 self.current_folder_id = start
                 self.reload_docs()
             except Exception as e:
@@ -226,8 +261,8 @@ class App(tk.Tk):
             messagebox.showinfo("Folders", "Select a folder to expand")
             return
         item = sel[0]
-        folder_id = self.tree_ids.get(item)
-        self._toggle_expand(item, folder_id)
+        self.tree.item(item, open=True)
+        self._tree_load_children_if_needed(item)
 
     def on_tree_select(self, event=None):
         sel = self.tree.selection()
@@ -244,39 +279,48 @@ class App(tk.Tk):
         item = self.tree.identify_row(event.y)
         if not item:
             return
+        if self.tree_ids.get(item) is None:
+            return
+        is_open = self.tree.item(item, 'open')
+        self.tree.item(item, open=(not is_open))
+        if not is_open:
+            self._tree_load_children_if_needed(item)
+
+    def _on_tree_open(self, event=None):
+        item = self.tree.focus()
+        if item:
+            self._tree_load_children_if_needed(item)
+
+    def _tree_load_children_if_needed(self, item: str):
         folder_id = self.tree_ids.get(item)
         if folder_id is None:
             return
-        self._toggle_expand(item, folder_id)
+        kids = self.tree.get_children(item)
+        if kids and self.tree.item(kids[0], 'text') == '…':
+            for k in kids:
+                self.tree.delete(k)
 
-    def _toggle_expand(self, item, folder_id: Union[int, str]):
-        def worker():
-            try:
-                self.start_busy('Loading subfolders…')
-                is_open = self.tree.item(item, 'open')
-                if is_open:
-                    self.tree.item(item, open=False)
-                else:
-                    for c in self.tree.get_children(item):
-                        self.tree.delete(c)
-                    subs = self.client.get_subfolders_all(folder_id, page_size=200)
+            def worker():
+                try:
+                    self.start_busy('Loading subfolders…')
+                    subs = self.client.get_subfolders_page(folder_id, max_results=200, offset=0)
                     for f in subs:
                         name = str(f.get('name') or f.get('id'))
                         it = self.tree.insert(item, tk.END, text=name)
                         self.tree_ids[it] = f.get('id')
-                    self.tree.item(item, open=True)
-                self.current_folder_id = folder_id
-                self.reload_docs()
-            except Exception as e:
-                messagebox.showerror("Expand", str(e))
-                self.log("Expand error: " + str(e))
-            finally:
-                self.stop_busy()
+                        self.tree.insert(it, tk.END, text='…')
+                    self.log(f"Loaded {len(subs)} subfolder(s) for folder {folder_id}.")
+                except Exception as e:
+                    messagebox.showerror("Expand", str(e))
+                    self.log("Expand error: " + str(e))
+                finally:
+                    self.stop_busy()
 
-        threading.Thread(target=worker, daemon=True).start()
+            threading.Thread(target=worker, daemon=True).start()
 
     # ---------- Docs table ----------
-    def reload_docs(self):
+    def reload_docs(self, offset: int = 0):
+        self._docs_offset = offset
         folder_id = self.current_folder_id or 'root'
         max_val = 50
         try:
@@ -288,8 +332,8 @@ class App(tk.Tk):
         def worker():
             try:
                 self.start_busy('Loading documents…')
-                self.log(f"Listing docs for folder {folder_id} (max={max_val}, filter={q})…")
-                rows = self.client.get_items(folder_id, max_results=max_val, offset=0, filterText=q)
+                self.log(f"Listing docs for folder {folder_id} (max={max_val}, offset={offset}, filter={q})…")
+                rows = self.client.get_items(folder_id, max_results=max_val, offset=offset, filterText=q)
                 docs = [r for r in rows if (str(r.get('class') or '').lower() == 'document')]
                 enriched = []
                 for d in docs:
@@ -317,6 +361,9 @@ class App(tk.Tk):
                     cl = ", ".join([str(c.get('name') or c.get('id')) for c in (d.get('classifications') or [])])
                     self.docs.insert('', tk.END, values=(d.get('id'), d.get('name'), fmt, d.get('dateUpdated'), ca, cl))
                 self.log(f"Fetched {len(enriched)} document(s) on this page.")
+                # Enable/disable Prev and Next based on current position and page size
+                self.btn_prev.config(state=tk.NORMAL if offset > 0 else tk.DISABLED)
+                self.btn_next.config(state=tk.NORMAL if len(enriched) == max_val else tk.DISABLED)
             except Exception as e:
                 messagebox.showerror("Docs", str(e))
                 self.log("Docs error: " + str(e))
@@ -327,7 +374,7 @@ class App(tk.Tk):
 
     def clear_search(self):
         self.search_var.set('')
-        self.reload_docs()
+        self.reload_docs(offset=0)
 
     def _on_select_all(self):
         if self.select_all_var.get():
@@ -336,10 +383,20 @@ class App(tk.Tk):
             self.docs.selection_remove(self.docs.get_children())
 
     def on_prev(self):
-        pass
+        max_val = 50
+        try:
+            max_val = int(self.max_var.get())
+        except Exception:
+            max_val = 50
+        self.reload_docs(offset=max(0, self._docs_offset - max_val))
 
     def on_next(self):
-        pass
+        max_val = 50
+        try:
+            max_val = int(self.max_var.get())
+        except Exception:
+            max_val = 50
+        self.reload_docs(offset=self._docs_offset + max_val)
 
     def _summarize_custom_attrs(self, lst: Any, limit: int = 420) -> str:
         parts = []

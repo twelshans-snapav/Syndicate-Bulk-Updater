@@ -93,11 +93,8 @@ class BulkEditorWindow(tk.Toplevel):
         bottom.grid(row=1, column=0, sticky='ew', padx=10, pady=(4, 10))
         bottom.columnconfigure(2, weight=1)
 
-        self.cls_replace_var = tk.BooleanVar(value=True)
+        self.cls_replace_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(bottom, text='Replace ALL existing classifications (unchecked = merge/add)', variable=self.cls_replace_var).grid(row=0, column=0, padx=(4, 12), sticky='w')
-
-        dry_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(bottom, text='Dry run (log only)', variable=dry_var).grid(row=0, column=1, padx=(0, 12), sticky='w')
 
         prog = ttk.Progressbar(bottom, mode='determinate', maximum=max(1, len(targets)))
         prog.grid(row=0, column=2, sticky='ew', padx=(0, 8))
@@ -114,7 +111,6 @@ class BulkEditorWindow(tk.Toplevel):
             if not edits_attrs and not sel_cls_ids:
                 messagebox.showinfo("No changes", "Add at least one attribute or classification change.")
                 return
-            is_dry = bool(dry_var.get())
 
             def names_for_ids(ids: List[int]) -> List[str]:
                 out = []
@@ -132,7 +128,7 @@ class BulkEditorWindow(tk.Toplevel):
                     for t in targets:
                         did = t['id']
                         dname = t['name']
-                        prog_lbl.config(text=("Dry-run " if is_dry else "Updating ") + f"doc {did} (" + str(done + 1) + f"/{total})…")
+                        prog_lbl.config(text=f"Updating doc {did} (" + str(done + 1) + f"/{total})…")
                         prog['value'] = done
                         self.update_idletasks()
                         try:
@@ -151,21 +147,14 @@ class BulkEditorWindow(tk.Toplevel):
                                 except Exception:
                                     pass
                             # Attributes
-                            if is_dry:
-                                for e in edits_attrs:
-                                    self.log(f"DRY-RUN doc {did} — Attr {e['id']}: WOULD SET={e['value']}")
-                            else:
-                                for e in edits_attrs:
-                                    self.log(f"POST version attr: ver={ver} attr={e['id']} value={e['value']}")
-                                    self.client.post_version_attr(ver, e['id'], e['value'])
+                            for e in edits_attrs:
+                                self.log(f"POST version attr: ver={ver} attr={e['id']} value={e['value']}")
+                                self.client.post_version_attr(ver, e['id'], e['value'])
                             # Classifications
                             if sel_cls_ids:
                                 target_ids = sel_cls_ids if replace_all else sorted(set(b_cls_ids) | set(sel_cls_ids))
-                                if is_dry:
-                                    self.log("DRY-RUN doc " + str(did) + " — Classifications: CURRENT=[" + ", ".join(names_for_ids(b_cls_ids)) + "] -> WOULD SET=[" + ", ".join(names_for_ids(target_ids)) + "] " + ("(replace)" if replace_all else "(merge)"))
-                                else:
-                                    self.log("POST classifications: doc=" + str(did) + " ids=[" + ", ".join(names_for_ids(target_ids)) + "] " + ("(replaceAll)" if replace_all else "(merge->replaceAll)"))
-                                    self.client.set_document_classifications(did, target_ids, replace_all=replace_all)
+                                self.log("POST classifications: doc=" + str(did) + " ids=[" + ", ".join(names_for_ids(target_ids)) + "] " + ("(replaceAll)" if replace_all else "(merge->replaceAll)"))
+                                self.client.set_document_classifications(did, target_ids, replace_all=replace_all)
                             after = self.client.get_document(did, include_custom=True, include_classifications=True)
                             a_cls_ids = []
                             for c in (after.get('classifications') or []):
@@ -189,28 +178,25 @@ class BulkEditorWindow(tk.Toplevel):
                             prog['value'] = done
                             self.update_idletasks()
 
-                    prog_lbl.config(text="Dry-run complete" if is_dry else "Done")
+                    prog_lbl.config(text="Done")
 
                     # Build summary message
-                    if is_dry:
-                        summary = f"Dry run complete — {total} document(s) evaluated, no changes made."
-                    else:
-                        summary_lines = [f"Bulk edit complete.\n"]
-                        summary_lines.append(f"  Documents processed:  {total}")
-                        summary_lines.append(f"  Succeeded:            {succeeded}")
-                        if errors:
-                            summary_lines.append(f"  Failed:               {len(errors)}")
-                        if edits_attrs:
-                            attr_names = ", ".join(e['name'] for e in edits_attrs)
-                            summary_lines.append(f"\n  Attributes set:  {attr_names}")
-                        if sel_cls_ids:
-                            cls_names = ", ".join(names_for_ids(sel_cls_ids))
-                            mode = "replaced all with" if replace_all else "merged in"
-                            summary_lines.append(f"  Classifications: {mode} [{cls_names}]")
-                        if errors:
-                            summary_lines.append("\nErrors:")
-                            summary_lines.extend(errors)
-                        summary = "\n".join(summary_lines)
+                    summary_lines = [f"Bulk edit complete.\n"]
+                    summary_lines.append(f"  Documents processed:  {total}")
+                    summary_lines.append(f"  Succeeded:            {succeeded}")
+                    if errors:
+                        summary_lines.append(f"  Failed:               {len(errors)}")
+                    if edits_attrs:
+                        attr_names = ", ".join(e['name'] for e in edits_attrs)
+                        summary_lines.append(f"\n  Attributes set:  {attr_names}")
+                    if sel_cls_ids:
+                        cls_names = ", ".join(names_for_ids(sel_cls_ids))
+                        mode = "replaced all with" if replace_all else "merged in"
+                        summary_lines.append(f"  Classifications: {mode} [{cls_names}]")
+                    if errors:
+                        summary_lines.append("\nErrors:")
+                        summary_lines.extend(errors)
+                    summary = "\n".join(summary_lines)
 
                     messagebox.showinfo("Bulk Edit Complete", summary)
                     self.destroy()
@@ -290,7 +276,7 @@ class BulkEditorWindow(tk.Toplevel):
                 dyn_val_var, dyn_widget = v, cb
             elif t == 'boolean':
                 v = tk.StringVar()
-                cb = ttk.Combobox(frm, textvariable=v, values=['', 'Yes', 'No', 'True', 'False', '1', '0'], state='readonly')
+                cb = ttk.Combobox(frm, textvariable=v, values=['Yes', 'No'], state='readonly')
                 cb.grid(row=1, column=1, sticky='ew', padx=4)
                 dyn_val_var, dyn_widget = v, cb
             else:

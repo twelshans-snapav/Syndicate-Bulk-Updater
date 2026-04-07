@@ -22,7 +22,7 @@ class Client:
     def __init__(self):
         self.auth: Optional[Auth] = None
         self.session = requests.Session() if requests else None
-        self.timeout = 300
+        self.timeout = None  # No per-request timeout; inactivity sign-out handled by the UI
 
     def _require(self):
         if not requests:
