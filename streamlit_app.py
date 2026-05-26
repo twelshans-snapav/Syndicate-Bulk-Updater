@@ -48,6 +48,8 @@ def _init():
         "rename_doc": None,
         # Reload trigger
         "docs_stale": False,
+        # Find & Replace
+        "fr_open": False,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -530,6 +532,75 @@ def rename_dialog():
                 except Exception as e:
                     st.error(f"Rename failed: {e}")
 
+# ── Find & Replace dialog ─────────────────────────────────────────────────────
+
+@st.dialog("Find & Replace Names", width="large")
+def find_replace_dialog():
+    docs = st.session_state.docs
+
+    col1, col2 = st.columns(2)
+    with col1:
+        find_text = st.text_input("Find", key="fr_find_input", placeholder='e.g. "um "')
+    with col2:
+        replace_text = st.text_input("Replace with", key="fr_replace_input", placeholder='e.g. "Universal Minidriver"')
+
+    matches = []
+    if find_text:
+        for d in docs:
+            if find_text in (d.get("name") or ""):
+                matches.append({
+                    "id": d["id"],
+                    "old_name": d["name"],
+                    "new_name": d["name"].replace(find_text, replace_text),
+                })
+
+    if find_text and matches:
+        st.write(f"**{len(matches)} document(s) will be renamed:**")
+        st.dataframe(pd.DataFrame(matches), hide_index=True, use_container_width=True)
+    elif find_text:
+        st.info("No documents on this page match that text.")
+    else:
+        st.info("Enter a find string above to preview matches.")
+
+    st.divider()
+    col_cancel, col_apply = st.columns(2)
+    with col_cancel:
+        if st.button("Cancel", use_container_width=True, key="fr_cancel"):
+            st.session_state.fr_open = False
+            st.rerun()
+    with col_apply:
+        if st.button(
+            f"Apply {len(matches)} rename(s)",
+            type="primary",
+            use_container_width=True,
+            disabled=(len(matches) == 0),
+            key="fr_apply",
+        ):
+            total = len(matches)
+            succeeded = 0
+            errors: list = []
+            progress = st.progress(0, text="Starting…")
+            for i, m in enumerate(matches):
+                progress.progress(i / total, text=f"Renaming {m['old_name']} ({i + 1}/{total})…")
+                try:
+                    result = c().update_document(m["id"], m["new_name"])
+                    updated = result.get("name", m["new_name"])
+                    for d in st.session_state.docs:
+                        if str(d.get("id")) == str(m["id"]):
+                            d["name"] = updated
+                            break
+                    log(f"Renamed {m['id']}: '{m['old_name']}' → '{updated}'")
+                    succeeded += 1
+                except Exception as e:
+                    errors.append(f"• {m['old_name']} (id {m['id']}): {e}")
+            progress.progress(1.0, text="Done")
+            st.success(f"Renamed {succeeded}/{total} document(s).")
+            for err in errors:
+                st.error(err)
+            st.session_state.fr_open = False
+            st.session_state.docs_stale = True
+
+
 # ── Sidebar ───────────────────────────────────────────────────────────────────
 
 with st.sidebar:
@@ -653,7 +724,7 @@ else:
         st.info("Select a folder from the sidebar to view documents.")
 
 # Action bar
-col_prev, col_next, col_edit, col_rename = st.columns([1, 1, 3, 2])
+col_prev, col_next, col_edit, col_rename, col_fr = st.columns([1, 1, 3, 2, 2])
 offset = st.session_state.docs_offset
 max_v = st.session_state.docs_max
 
@@ -689,6 +760,10 @@ with col_rename:
         st.session_state.rename_doc = {"id": d["id"], "name": d["name"]}
         st.session_state.rename_open = True
 
+with col_fr:
+    if st.button("Find & Replace…", disabled=(not docs), use_container_width=True):
+        st.session_state.fr_open = True
+
 if docs:
     st.caption(f"Showing {offset + 1}–{offset + len(docs)}")
 
@@ -700,8 +775,11 @@ if st.session_state.get("bulk_open"):
 if st.session_state.get("rename_open"):
     rename_dialog()
 
-# Reload docs once the bulk editor has closed
-if st.session_state.docs_stale and not st.session_state.get("bulk_open"):
+if st.session_state.get("fr_open"):
+    find_replace_dialog()
+
+# Reload docs once the bulk editor or find & replace dialog has closed
+if st.session_state.docs_stale and not st.session_state.get("bulk_open") and not st.session_state.get("fr_open"):
     st.session_state.docs_stale = False
     load_docs()
     st.rerun()

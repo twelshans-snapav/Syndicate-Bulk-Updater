@@ -30,6 +30,7 @@ class BulkEditorWindow(tk.Toplevel):
         on_doc_updated: Callable[[Any, Dict[str, Any]], None],
         start_busy: Optional[Callable[[str], None]] = None,
         stop_busy: Optional[Callable[[], None]] = None,
+        reset_activity: Optional[Callable[[], None]] = None,
     ):
         super().__init__(master)
         self.client = client
@@ -39,6 +40,7 @@ class BulkEditorWindow(tk.Toplevel):
         self.on_doc_updated = on_doc_updated
         self._start_busy = start_busy or (lambda msg: None)
         self._stop_busy = stop_busy or (lambda: None)
+        self._reset_activity = reset_activity or (lambda: None)
         self._cls_loaded = False
 
         count = len(targets)
@@ -170,6 +172,7 @@ class BulkEditorWindow(tk.Toplevel):
                                 self.log("Doc " + str(did) + " — Classifications: BEFORE=[" + ", ".join(names_for_ids(b_cls_ids)) + "] -> AFTER=[" + ", ".join(names_for_ids(a_cls_ids)) + "]")
                             self.on_doc_updated(did, after)
                             succeeded += 1
+                            self._reset_activity()
                         except Exception as e:
                             errors.append(f"• {dname} (id {did}): {e}")
                             self.log("Update error (doc " + str(did) + "): " + str(e))

@@ -42,22 +42,26 @@ class App(tk.Tk):
         auth = ttk.LabelFrame(self, text="Authentication")
         auth.pack(fill=tk.X, padx=10, pady=8)
         self.domain_var = tk.StringVar(value="adiglobal")
-        ttk.Label(auth, text="Username").grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
+        ttk.Label(auth, text="Domain").grid(row=0, column=0, padx=5, pady=5, sticky=tk.W)
+        domain_entry = ttk.Entry(auth, textvariable=self.domain_var, width=14)
+        domain_entry.grid(row=0, column=1, padx=5, pady=5, sticky='ew')
+        domain_entry.bind('<Return>', lambda e: self.on_auth())
+        ttk.Label(auth, text="Username").grid(row=0, column=2, padx=5, pady=5, sticky=tk.W)
         self.user_var = tk.StringVar()
         user_entry = ttk.Entry(auth, textvariable=self.user_var)
-        user_entry.grid(row=0, column=1, padx=5, pady=5, sticky='ew')
+        user_entry.grid(row=0, column=3, padx=5, pady=5, sticky='ew')
         user_entry.bind('<Return>', lambda e: self.on_auth())
-        ttk.Label(auth, text="Password").grid(row=0, column=2, padx=5, pady=5, sticky=tk.W)
+        ttk.Label(auth, text="Password").grid(row=0, column=4, padx=5, pady=5, sticky=tk.W)
         self.pw_var = tk.StringVar()
         pw_entry = ttk.Entry(auth, textvariable=self.pw_var, show='•')
-        pw_entry.grid(row=0, column=3, padx=5, pady=5, sticky='ew')
+        pw_entry.grid(row=0, column=5, padx=5, pady=5, sticky='ew')
         pw_entry.bind('<Return>', lambda e: self.on_auth())
         self.btn_auth = ttk.Button(auth, text="Authenticate", command=self.on_auth)
-        self.btn_auth.grid(row=0, column=4, padx=8, pady=5)
+        self.btn_auth.grid(row=0, column=6, padx=8, pady=5)
         self.auth_status = tk.StringVar(value="Not authenticated")
-        ttk.Label(auth, textvariable=self.auth_status, foreground="#2a72d4").grid(row=0, column=5, padx=8, sticky=tk.W)
+        ttk.Label(auth, textvariable=self.auth_status, foreground="#2a72d4").grid(row=0, column=7, padx=8, sticky=tk.W)
         # Let the entry columns absorb extra space
-        for col in (1, 3):
+        for col in (3, 5):
             auth.grid_columnconfigure(col, weight=1)
 
         # --- Busy indicator ---
@@ -125,6 +129,8 @@ class App(tk.Tk):
         self.btn_edit.grid(row=1, column=2, columnspan=2, padx=4, pady=(2, 6), sticky='ew')
         self.select_all_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(rf, text="Select All", variable=self.select_all_var, command=self._on_select_all).grid(row=1, column=4, columnspan=2, padx=8, pady=(2, 6), sticky=tk.W)
+        self.btn_find_replace = ttk.Button(rf, text="Find & Replace…", command=self._open_find_replace_dialog, state=tk.DISABLED)
+        self.btn_find_replace.grid(row=1, column=6, padx=(4, 8), pady=(2, 6))
 
         # Docs treeview with both scrollbars
         docs_frame = ttk.Frame(right)
@@ -185,7 +191,7 @@ class App(tk.Tk):
         self.client.auth = None
         self._last_activity = 0.0
         self.auth_status.set("Signed out (5 min inactivity)")
-        for b in [self.btn_expand, self.btn_prev, self.btn_next, self.btn_edit]:
+        for b in [self.btn_expand, self.btn_prev, self.btn_next, self.btn_edit, self.btn_find_replace]:
             b.config(state=tk.DISABLED)
         self.docs.delete(*self.docs.get_children())
         for c in self.tree.get_children(''):
@@ -212,7 +218,7 @@ class App(tk.Tk):
                 self.client.authenticate(domain, user, pw)
                 self.auth_status.set("Authenticated")
                 self._last_activity = time.time()
-                for b in [self.btn_expand, self.btn_prev, self.btn_next, self.btn_edit]:
+                for b in [self.btn_expand, self.btn_prev, self.btn_next, self.btn_edit, self.btn_find_replace]:
                     b.config(state=tk.NORMAL)
                 self.on_load_tree()
             except Exception as e:
@@ -439,6 +445,7 @@ class App(tk.Tk):
                     on_doc_updated=self._on_doc_updated,
                     start_busy=self.start_busy,
                     stop_busy=self.stop_busy,
+                    reset_activity=self._reset_inactivity_timer,
                 )
             except Exception as e:
                 messagebox.showerror("Edit", str(e))
@@ -522,6 +529,142 @@ class App(tk.Tk):
                 cl = ", ".join([str(c.get('name') or c.get('id')) for c in (after.get('classifications') or [])])
                 self.docs.item(item, values=(after.get('id'), after.get('name'), fmt, after.get('dateUpdated'), ca, cl))
                 break
+
+
+    def _open_find_replace_dialog(self):
+        current_docs = []
+        for it in self.docs.get_children():
+            vals = self.docs.item(it, 'values')
+            if vals:
+                current_docs.append({"id": vals[0], "name": vals[1], "_item": it})
+        if not current_docs:
+            messagebox.showinfo("Find & Replace", "No documents loaded. Navigate to a folder first.")
+            return
+
+        win = tk.Toplevel(self)
+        win.title("Find & Replace — Document Names")
+        win.geometry("820x540")
+        win.grab_set()
+        win.rowconfigure(2, weight=1)
+        win.columnconfigure(0, weight=1)
+
+        # Inputs row
+        top = ttk.Frame(win)
+        top.grid(row=0, column=0, sticky='ew', padx=12, pady=(12, 4))
+        top.columnconfigure(1, weight=1)
+        top.columnconfigure(3, weight=1)
+        ttk.Label(top, text="Find:").grid(row=0, column=0, sticky='w', padx=(0, 4))
+        find_var = tk.StringVar()
+        ttk.Entry(top, textvariable=find_var).grid(row=0, column=1, sticky='ew', padx=(0, 12))
+        ttk.Label(top, text="Replace with:").grid(row=0, column=2, sticky='w', padx=(0, 4))
+        replace_var = tk.StringVar()
+        ttk.Entry(top, textvariable=replace_var).grid(row=0, column=3, sticky='ew', padx=(0, 8))
+        ttk.Button(top, text="Preview", command=lambda: on_preview()).grid(row=0, column=4, padx=(4, 0))
+
+        ttk.Label(win, text="Preview — documents whose names contain the find text:").grid(
+            row=1, column=0, sticky='w', padx=12, pady=(8, 2))
+
+        # Preview treeview
+        pf = ttk.Frame(win)
+        pf.grid(row=2, column=0, sticky='nsew', padx=12, pady=4)
+        pf.rowconfigure(0, weight=1)
+        pf.columnconfigure(0, weight=1)
+        preview = ttk.Treeview(pf, columns=("id", "old_name", "new_name"), show='headings')
+        for col, w, label in [("id", 90, "ID"), ("old_name", 330, "Old Name"), ("new_name", 330, "New Name")]:
+            preview.heading(col, text=label)
+            preview.column(col, width=w, minwidth=60, anchor=tk.W)
+        vsb = ttk.Scrollbar(pf, orient=tk.VERTICAL, command=preview.yview)
+        hsb = ttk.Scrollbar(pf, orient=tk.HORIZONTAL, command=preview.xview)
+        preview.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+        vsb.grid(row=0, column=1, sticky='ns')
+        hsb.grid(row=1, column=0, sticky='ew')
+        preview.grid(row=0, column=0, sticky='nsew')
+
+        # Bottom bar
+        bottom = ttk.Frame(win)
+        bottom.grid(row=3, column=0, sticky='ew', padx=12, pady=(4, 10))
+        bottom.columnconfigure(1, weight=1)
+        prog = ttk.Progressbar(bottom, mode='determinate', maximum=1)
+        prog.grid(row=0, column=0, sticky='ew', padx=(0, 8))
+        prog_lbl = ttk.Label(bottom, text="")
+        prog_lbl.grid(row=0, column=1, sticky='w')
+        ttk.Button(bottom, text="Cancel", command=win.destroy).grid(row=0, column=2, padx=(0, 4))
+        apply_btn = ttk.Button(bottom, text="Apply 0 rename(s)", state=tk.DISABLED)
+        apply_btn.grid(row=0, column=3)
+
+        _matches: List[Dict[str, Any]] = []
+
+        def on_preview():
+            find = find_var.get()
+            if not find:
+                messagebox.showinfo("Preview", "Enter a find string first.", parent=win)
+                return
+            replace = replace_var.get()
+            matches = [d for d in current_docs if find in d['name']]
+            preview.delete(*preview.get_children())
+            _matches.clear()
+            for d in matches:
+                new_name = d['name'].replace(find, replace)
+                preview.insert('', tk.END, values=(d['id'], d['name'], new_name))
+                _matches.append({**d, 'new_name': new_name})
+            count = len(_matches)
+            prog['maximum'] = max(1, count)
+            prog['value'] = 0
+            apply_btn.config(
+                text=f"Apply {count} rename(s)",
+                state=tk.NORMAL if count > 0 else tk.DISABLED,
+            )
+            prog_lbl.config(text=f"{count} match(es) found")
+
+        def on_apply():
+            if not _matches:
+                return
+            apply_btn.config(state=tk.DISABLED)
+            total = len(_matches)
+            prog['maximum'] = total
+            prog['value'] = 0
+
+            def worker():
+                done = 0
+                succeeded = 0
+                errors: List[str] = []
+                for m in _matches:
+                    prog_lbl.config(text=f"Renaming {done + 1}/{total}…")
+                    prog['value'] = done
+                    win.update_idletasks()
+                    try:
+                        result = self.client.update_document(m['id'], m['new_name'])
+                        updated_name = result.get('name', m['new_name'])
+                        try:
+                            vals = list(self.docs.item(m['_item'], 'values'))
+                            vals[1] = updated_name
+                            self.docs.item(m['_item'], values=vals)
+                        except Exception:
+                            pass
+                        self.log(f"Renamed doc {m['id']}: '{m['name']}' → '{updated_name}'")
+                        succeeded += 1
+                        self._reset_inactivity_timer()
+                    except Exception as e:
+                        errors.append(f"• {m['name']} (id {m['id']}): {e}")
+                        self.log(f"Rename error (doc {m['id']}): {e}")
+                    finally:
+                        done += 1
+                        prog['value'] = done
+                        win.update_idletasks()
+
+                prog_lbl.config(text="Done")
+                summary = f"Find & Replace complete.\n\nSucceeded: {succeeded}/{total}"
+                if errors:
+                    summary += f"\nFailed: {len(errors)}\n\n" + "\n".join(errors)
+                messagebox.showinfo("Find & Replace", summary, parent=win)
+                win.destroy()
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        apply_btn.config(command=on_apply)
+        find_var.trace_add('write', lambda *_: apply_btn.config(state=tk.DISABLED, text="Apply 0 rename(s)"))
+        replace_var.trace_add('write', lambda *_: apply_btn.config(state=tk.DISABLED, text="Apply 0 rename(s)"))
+        win.bind('<Return>', lambda e: on_preview())
 
 
 if __name__ == '__main__':

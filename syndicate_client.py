@@ -29,6 +29,8 @@ class Client:
             raise RuntimeError("Install requests: pip install requests")
         if not self.session:
             raise RuntimeError("requests session not available")
+        if not self.auth:
+            raise RuntimeError("Session expired — please re-authenticate")
 
     def base(self, domain: str) -> str:
         return "https://core-" + domain + ".bravais.com/api/v3"
