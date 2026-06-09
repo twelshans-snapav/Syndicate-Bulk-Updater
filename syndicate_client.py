@@ -252,6 +252,52 @@ class Client:
         data = r.json()
         return data if isinstance(data, list) else (data.get('items', []) if isinstance(data, dict) else [])
 
+    def get_all_docs_in_subtree(
+        self,
+        folder_id: Union[int, str],
+        *,
+        page_size: int = 200,
+        max_docs: int = 10000,
+        progress_cb: Optional[Callable[[str], None]] = None,
+    ) -> List[Dict[str, Any]]:
+        """BFS through folder_id and all descendant subfolders, returning every document."""
+        all_docs: List[Dict[str, Any]] = []
+        visited_folders: set = set()
+        queue: List[Union[int, str]] = [folder_id]
+
+        while queue and len(all_docs) < max_docs:
+            fid = queue.pop(0)
+            if fid in visited_folders:
+                continue
+            visited_folders.add(fid)
+
+            if progress_cb:
+                progress_cb(f"Scanning folder {fid} ({len(visited_folders)} folders scanned, {len(all_docs)} docs found)…")
+
+            # Collect documents from this folder (paginated)
+            offset = 0
+            while len(all_docs) < max_docs:
+                items = self.get_items(fid, max_results=page_size, offset=offset)
+                docs = [i for i in items if str(i.get('class') or '').lower() == 'document']
+                all_docs.extend(docs)
+                if len(items) < page_size:
+                    break
+                offset += len(items)
+
+            # Queue subfolders
+            sub_offset = 0
+            while True:
+                subs = self.get_subfolders_page(fid, max_results=page_size, offset=sub_offset)
+                for s in subs:
+                    sid = s.get('id')
+                    if sid is not None and sid not in visited_folders:
+                        queue.append(sid)
+                if len(subs) < page_size:
+                    break
+                sub_offset += len(subs)
+
+        return all_docs
+
     def update_document(self, doc_id: Union[int, str], name: str) -> Dict[str, Any]:
         self._require()
         url = self.base(self.auth.domain) + f"/documents/{doc_id}"

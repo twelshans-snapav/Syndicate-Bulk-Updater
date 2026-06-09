@@ -84,6 +84,8 @@ class App(tk.Tk):
         lf.pack(fill=tk.X, padx=5, pady=5)
         self.btn_expand = ttk.Button(lf, text="Expand Selected", command=self.on_expand_selected, state=tk.DISABLED)
         self.btn_expand.grid(row=0, column=0, padx=4, pady=4)
+        self.btn_edit_subtree = ttk.Button(lf, text="Edit All Docs in Subtree…", command=self.on_edit_subtree, state=tk.DISABLED)
+        self.btn_edit_subtree.grid(row=0, column=1, padx=4, pady=4)
 
         tree_frame = ttk.Frame(left)
         tree_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
@@ -191,7 +193,7 @@ class App(tk.Tk):
         self.client.auth = None
         self._last_activity = 0.0
         self.auth_status.set("Signed out (5 min inactivity)")
-        for b in [self.btn_expand, self.btn_prev, self.btn_next, self.btn_edit, self.btn_find_replace]:
+        for b in [self.btn_expand, self.btn_edit_subtree, self.btn_prev, self.btn_next, self.btn_edit, self.btn_find_replace]:
             b.config(state=tk.DISABLED)
         self.docs.delete(*self.docs.get_children())
         for c in self.tree.get_children(''):
@@ -218,7 +220,7 @@ class App(tk.Tk):
                 self.client.authenticate(domain, user, pw)
                 self.auth_status.set("Authenticated")
                 self._last_activity = time.time()
-                for b in [self.btn_expand, self.btn_prev, self.btn_next, self.btn_edit, self.btn_find_replace]:
+                for b in [self.btn_expand, self.btn_edit_subtree, self.btn_prev, self.btn_next, self.btn_edit, self.btn_find_replace]:
                     b.config(state=tk.NORMAL)
                 self.on_load_tree()
             except Exception as e:
@@ -450,6 +452,82 @@ class App(tk.Tk):
             except Exception as e:
                 messagebox.showerror("Edit", str(e))
                 self.log("Edit load error: " + str(e))
+            finally:
+                self.stop_busy()
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def on_edit_subtree(self):
+        sel = self.tree.selection()
+        folder_id = self.tree_ids.get(sel[0]) if sel else self.current_folder_id
+        if folder_id is None:
+            messagebox.showinfo("Edit Subtree", "Select a folder in the tree first.")
+            return
+
+        if not messagebox.askyesno(
+            "Edit All Docs in Subtree",
+            f"This will recursively collect every document in folder '{folder_id}' and all its subfolders, "
+            "then open the bulk editor.\n\nThis may take a while for large folder trees. Continue?",
+        ):
+            return
+
+        def worker():
+            try:
+                self.start_busy("Scanning subtree for documents…")
+                self.log(f"Scanning subtree of folder {folder_id} for all documents…")
+
+                docs = self.client.get_all_docs_in_subtree(
+                    folder_id,
+                    progress_cb=lambda msg: self.log(msg + "\n"),
+                )
+
+                if not docs:
+                    messagebox.showinfo("Edit Subtree", "No documents found in this folder tree.")
+                    return
+
+                # Enrich each doc with custom attributes and classifications
+                self.log(f"Found {len(docs)} document(s). Enriching metadata…")
+                enriched = []
+                for d in docs:
+                    if not d.get('customAttributes') or not d.get('classifications'):
+                        try:
+                            det = self.client.get_document(d.get('id'), include_custom=True, include_classifications=True)
+                            if isinstance(det, dict):
+                                if det.get('customAttributes'):
+                                    d['customAttributes'] = det.get('customAttributes')
+                                if det.get('classifications'):
+                                    d['classifications'] = det.get('classifications')
+                        except Exception:
+                            pass
+                    for c in (d.get('classifications') or []):
+                        try:
+                            cid = int(c.get('id'))
+                            nm = str(c.get('name') or '')
+                            if nm:
+                                self.cls_name_cache[cid] = nm
+                        except Exception:
+                            pass
+                    enriched.append({"id": d.get('id'), "name": d.get('name', '')})
+
+                attrs = []
+                try:
+                    attrs = self.client.list_all_custom_attributes_safe(page_size=200)
+                except Exception as e:
+                    self.log("Attributes safe list failed: " + str(e) + "\n")
+
+                self.log(f"Opening bulk editor for {len(enriched)} document(s) from subtree of folder {folder_id}.\n")
+                BulkEditorWindow(
+                    self, self.client, enriched, attrs,
+                    cls_name_cache=self.cls_name_cache,
+                    log_fn=self.log,
+                    on_doc_updated=self._on_doc_updated,
+                    start_busy=self.start_busy,
+                    stop_busy=self.stop_busy,
+                    reset_activity=self._reset_inactivity_timer,
+                )
+            except Exception as e:
+                messagebox.showerror("Edit Subtree", str(e))
+                self.log("Edit subtree error: " + str(e) + "\n")
             finally:
                 self.stop_busy()
 
