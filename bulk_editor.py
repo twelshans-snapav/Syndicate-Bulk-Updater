@@ -130,9 +130,10 @@ class BulkEditorWindow(tk.Toplevel):
                     for t in targets:
                         did = t['id']
                         dname = t['name']
-                        prog_lbl.config(text=f"Updating doc {did} (" + str(done + 1) + f"/{total})…")
-                        prog['value'] = done
-                        self.update_idletasks()
+                        self.after(0, lambda doc=did, d=done, tot=total: (
+                            prog_lbl.config(text=f"Updating doc {doc} ({d + 1}/{tot})…"),
+                            prog.__setitem__('value', d),
+                        ))
                         try:
                             before = self.client.get_document(did, include_custom=True, include_classifications=True)
                             ver = (before.get('latestVersion') or {}).get('id')
@@ -170,7 +171,7 @@ class BulkEditorWindow(tk.Toplevel):
                                     pass
                             if sel_cls_ids:
                                 self.log("Doc " + str(did) + " — Classifications: BEFORE=[" + ", ".join(names_for_ids(b_cls_ids)) + "] -> AFTER=[" + ", ".join(names_for_ids(a_cls_ids)) + "]")
-                            self.on_doc_updated(did, after)
+                            self.after(0, lambda d=did, a=after: self.on_doc_updated(d, a))
                             succeeded += 1
                             self._reset_activity()
                         except Exception as e:
@@ -178,10 +179,7 @@ class BulkEditorWindow(tk.Toplevel):
                             self.log("Update error (doc " + str(did) + "): " + str(e))
                         finally:
                             done += 1
-                            prog['value'] = done
-                            self.update_idletasks()
-
-                    prog_lbl.config(text="Done")
+                            self.after(0, lambda d=done: prog.__setitem__('value', d))
 
                     # Build summary message
                     summary_lines = [f"Bulk edit complete.\n"]
@@ -201,11 +199,17 @@ class BulkEditorWindow(tk.Toplevel):
                         summary_lines.extend(errors)
                     summary = "\n".join(summary_lines)
 
-                    messagebox.showinfo("Bulk Edit Complete", summary)
-                    self.destroy()
+                    def _finish(msg=summary):
+                        prog_lbl.config(text="Done")
+                        messagebox.showinfo("Bulk Edit Complete", msg)
+                        self.destroy()
+                    self.after(0, _finish)
                 except Exception as e:
-                    messagebox.showerror("Bulk Edit", str(e))
-                    self.log("Bulk update error: " + str(e))
+                    _err = str(e)
+                    self.after(0, lambda err=_err: (
+                        messagebox.showerror("Bulk Edit", err),
+                        self.log("Bulk update error: " + err),
+                    ))
             threading.Thread(target=worker, daemon=True).start()
 
     def _on_tab_changed(self, event=None):

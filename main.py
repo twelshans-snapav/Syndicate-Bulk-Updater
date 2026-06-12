@@ -32,8 +32,13 @@ class App(tk.Tk):
         self._check_inactivity()
 
     def log(self, msg: str):
+        if threading.current_thread() is not threading.main_thread():
+            self.after(0, lambda m=msg: self.log(m))
+            return
         ts = time.strftime("%H:%M:%S")
-        self.log_text.insert(tk.END, f"[{ts}] {msg}")
+        self.log_text.insert(tk.END, f"[{ts}] {msg.rstrip(chr(10))}\n")
+        if int(self.log_text.index('end-1c').split('.')[0]) > 2000:
+            self.log_text.delete('1.0', '500.0')
         self.log_text.see(tk.END)
 
     # ---------- UI Shell ----------
@@ -707,19 +712,23 @@ class App(tk.Tk):
                 succeeded = 0
                 errors: List[str] = []
                 for m in _matches:
-                    prog_lbl.config(text=f"Renaming {done + 1}/{total}…")
-                    prog['value'] = done
-                    win.update_idletasks()
+                    self.after(0, lambda d=done, t=total: (
+                        prog_lbl.config(text=f"Renaming {d + 1}/{t}…"),
+                        prog.__setitem__('value', d),
+                    ))
                     try:
                         result = self.client.update_document(m['id'], m['new_name'])
                         updated_name = result.get('name', m['new_name'])
-                        try:
-                            vals = list(self.docs.item(m['_item'], 'values'))
-                            vals[1] = updated_name
-                            self.docs.item(m['_item'], values=vals)
-                        except Exception:
-                            pass
-                        self.log(f"Renamed doc {m['id']}: '{m['name']}' → '{updated_name}'")
+                        _item, _id, _old, _new = m['_item'], m['id'], m['name'], updated_name
+                        def _update_row(item=_item, new=_new):
+                            try:
+                                vals = list(self.docs.item(item, 'values'))
+                                vals[1] = new
+                                self.docs.item(item, values=vals)
+                            except Exception:
+                                pass
+                        self.after(0, _update_row)
+                        self.log(f"Renamed doc {_id}: '{_old}' → '{_new}'")
                         succeeded += 1
                         self._reset_inactivity_timer()
                     except Exception as e:
@@ -727,15 +736,16 @@ class App(tk.Tk):
                         self.log(f"Rename error (doc {m['id']}): {e}")
                     finally:
                         done += 1
-                        prog['value'] = done
-                        win.update_idletasks()
+                        self.after(0, lambda d=done: prog.__setitem__('value', d))
 
-                prog_lbl.config(text="Done")
-                summary = f"Find & Replace complete.\n\nSucceeded: {succeeded}/{total}"
+                _summary = f"Find & Replace complete.\n\nSucceeded: {succeeded}/{total}"
                 if errors:
-                    summary += f"\nFailed: {len(errors)}\n\n" + "\n".join(errors)
-                messagebox.showinfo("Find & Replace", summary, parent=win)
-                win.destroy()
+                    _summary += f"\nFailed: {len(errors)}\n\n" + "\n".join(errors)
+                def _finish(summary=_summary):
+                    prog_lbl.config(text="Done")
+                    messagebox.showinfo("Find & Replace", summary, parent=win)
+                    win.destroy()
+                self.after(0, _finish)
 
             threading.Thread(target=worker, daemon=True).start()
 
